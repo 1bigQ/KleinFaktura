@@ -3,13 +3,13 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGridLayout, QGroupBox,
-                               QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QTabWidget,
-                               QVBoxLayout, QWidget)
+                                QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QTabWidget,
+                                QVBoxLayout, QWidget)
 
 from app.db import repo
 from app.db.database import profile
 from app.ui.common import (Ctx, GuardedDialog, button, confirm, count, error, hbox, item, make_table, page_title,
-                           searchable_combo, selected_data)
+                            searchable_combo, selected_data)
 
 
 class ProjectDialog(GuardedDialog, QDialog):
@@ -236,13 +236,15 @@ class CustomersPage(QWidget):
                                      tooltip="Einen entfernten Kunden wieder in Liste und Auswahl aufnehmen")
         lay.addLayout(hbox(self.search, self.show_inactive, self.reactivate_btn))
         self.hottgenroth_btn = button("Aus Hottgenroth importieren", self.import_hottgenroth)
+        self.modified_shop_btn = button("Aus modified-Shop importieren", self.import_modified_shop)
         lay.addLayout(hbox(button("Neuer Kunde", self.new, primary=True),
-                           button("Bearbeiten", self.edit),
-                           button("Entfernen", self.remove, danger=True),
-                           button("Notizen", self.show_notes, tooltip="Notizen zum markierten Kunden anzeigen"),
-                           None,
-                           self.hottgenroth_btn,
-                           button("CSV/Excel importieren", self.import_csv)))
+                          button("Bearbeiten", self.edit),
+                          button("Entfernen", self.remove, danger=True),
+                          button("Notizen", self.show_notes, tooltip="Notizen zum markierten Kunden anzeigen"),
+                          None,
+                          self.hottgenroth_btn,
+                          self.modified_shop_btn,
+                          button("CSV/Excel importieren", self.import_csv)))
         self.table = make_table(["Kundennr.", "Name", "Straße", "PLZ", "Ort", "E-Mail", "Telefon", "Quelle"], stretch_col=1)
         self.table.doubleClicked.connect(self.edit)
         lay.addWidget(self.table)
@@ -309,6 +311,11 @@ class CustomersPage(QWidget):
         if not profile(self.ctx.con).hottgenroth:
             return
         if run_hottgenroth_import(self, self.ctx):
+            self.ctx.changed()
+
+    def import_modified_shop(self):
+        from app.ui.modified_shop_dialog import run_modified_shop_import
+        if run_modified_shop_import(self, self.ctx):
             self.ctx.changed()
 
     def show_notes(self):
