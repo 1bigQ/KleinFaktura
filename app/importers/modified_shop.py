@@ -26,7 +26,7 @@ def _base_url(value: str) -> str:
 
 
 class ModifiedShopClient:
-    """Small stdlib-only client. Credentials and access token are kept in memory only."""
+    """Small stdlib-only client. Credentials and access tokens are kept in memory only."""
 
     def __init__(self, shop_url: str, username: str, password: str, timeout: int = 20):
         self.base_url = _base_url(shop_url) + "/api/v1"
@@ -34,6 +34,7 @@ class ModifiedShopClient:
         self.password = password or ""
         self.timeout = timeout
         self.access_token = ""
+        self.refresh_token = ""
         if not self.username or not self.password:
             raise ModifiedShopError("Bitte API-Benutzername und Passwort eingeben.")
 
@@ -53,9 +54,30 @@ class ModifiedShopClient:
             raise ModifiedShopError(f"Anmeldung fehlgeschlagen (HTTP {exc.code}).") from exc
         except (urllib.error.URLError, OSError, TimeoutError) as exc:
             raise ModifiedShopError(f"Shop nicht erreichbar: {exc}") from exc
-        self.access_token = str(payload.get("access_token") or "") if isinstance(payload, dict) else ""
-        if not self.access_token:
+        self._store_tokens(payload)
+
+    def _store_tokens(self, payload: Any) -> None:
+        if not isinstance(payload, dict) or not payload.get("access_token"):
             raise ModifiedShopError("Die Shop-API hat kein Zugriffstoken zurückgegeben.")
+        self.access_token = str(payload["access_token"])
+        self.refresh_token = str(payload.get("refresh_token") or "")
+
+    def _refresh(self) -> bool:
+        if not self.refresh_token:
+            return False
+        request = urllib.request.Request(
+            self.base_url + "/oauth/refresh",
+            headers={"Accept": "application/json", "User-Agent": "KleinFaktura-modified-shop-import/1",
+                     "refresh_token": self.refresh_token},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout, context=ssl.create_default_context()) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError):
+            return False
+        self._store_tokens(payload)
+        return True
 
     def _request(self, path: str, params: dict | None = None):
         if not self.access_token:
@@ -63,24 +85,28 @@ class ModifiedShopClient:
         url = self.base_url + path
         if params:
             url += "?" + urllib.parse.urlencode(params)
-        request = urllib.request.Request(
-            url,
-            headers={"Accept": "application/json", "Authorization": f"Bearer {self.access_token}",
-                     "User-Agent": "KleinFaktura-modified-shop-import/1"},
-            method="GET",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout, context=ssl.create_default_context()) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            if exc.code in (401, 403):
-                raise ModifiedShopError("API-Zugriff verweigert. Berechtigungen im modified-Shop prüfen.") from exc
-            detail = exc.read(2048).decode("utf-8", errors="replace")
-            raise ModifiedShopError(f"Shop-API antwortet mit HTTP {exc.code}: {detail[:500]}") from exc
-        except (urllib.error.URLError, OSError, TimeoutError) as exc:
-            raise ModifiedShopError(f"Shop nicht erreichbar: {exc}") from exc
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ModifiedShopError("Die Shop-API hat keine gültige JSON-Antwort geliefert.") from exc
+        for attempt in range(2):
+            request = urllib.request.Request(
+                url,
+                headers={"Accept": "application/json", "Authorization": f"Bearer {self.access_token}",
+                         "User-Agent": "KleinFaktura-modified-shop-import/1"},
+                method="GET",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout, context=ssl.create_default_context()) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                if exc.code == 401 and attempt == 0 and self._refresh():
+                    continue
+                if exc.code in (401, 403):
+                    raise ModifiedShopError("API-Zugriff verweigert. Berechtigungen im modified-Shop prüfen.") from exc
+                detail = exc.read(2048).decode("utf-8", errors="replace")
+                raise ModifiedShopError(f"Shop-API antwortet mit HTTP {exc.code}: {detail[:500]}") from exc
+            except (urllib.error.URLError, OSError, TimeoutError) as exc:
+                raise ModifiedShopError(f"Shop nicht erreichbar: {exc}") from exc
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ModifiedShopError("Die Shop-API hat keine gültige JSON-Antwort geliefert.") from exc
+        raise ModifiedShopError("API-Anmeldung abgelaufen. Bitte den Import erneut starten.")
 
     @staticmethod
     def _rows(payload: Any) -> tuple[list[dict], int | None]:
@@ -137,7 +163,7 @@ def _str(data: dict | None, *keys: str, default: str = "") -> str:
 def customer_parts(record: dict) -> tuple[dict, list[dict]]:
     """Map a modified-Shop customer record to KleinFaktura and return extra addresses."""
     customer = record.get("customers") if isinstance(record.get("customers"), dict) else record
-    addresses = record.get("address_book") or []
+    addresses = record.get("address_book") or record.get("customers_address_book") or []
     if isinstance(addresses, dict):
         addresses = [addresses]
     addresses = [address for address in addresses if isinstance(address, dict)]
